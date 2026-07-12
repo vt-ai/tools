@@ -21,7 +21,7 @@
 <script>
     window.goatcounter = { path: function(p) { return location.host + p } }
 </script>
-<script data-goatcounter="https://indiamtf.goatcounter.com/count" async src="//gc.zgo.at/count.js"></script>
+<script data-goatcounter="https://MYCODE.goatcounter.com/count" async src="//gc.zgo.at/count.js"></script>
 </head>
 <body>
 
@@ -99,10 +99,13 @@
       <p class="desc">Paste or write Markdown, preview it live, and export to your format of choice.</p>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;">
         <div>
-          <h3 style="font-size:14px;margin-bottom:8px;">Input Markdown</h3>
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+            <h3 style="font-size:14px;">Input Markdown</h3>
+            <label class="btn ghost" style="cursor:pointer;font-size:12px;padding:6px 12px;">⭱ Upload .md<input type="file" id="frommd-upload" accept=".md,.markdown,text/markdown" style="display:none;"></label>
+          </div>
           <textarea id="frommd-input" style="width:100%;height:50vh;font-family:'JetBrains Mono',monospace;font-size:13px;padding:12px;border:1px solid var(--border-strong);border-radius:6px;resize:none;"># Hello World
 
-Paste or type Markdown here.
+Paste, type, or upload a Markdown file.
 
 - List item 1
 - List item 2
