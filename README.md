@@ -86,3 +86,9 @@ npm run preview  # preview the production build locally
   the tools after the first deploy and flag anything that errors — the browser console
   will show a clear message for anything that needs a fix.
 ```
+
+## License
+
+Licensed under **GPL-3.0**. See `LICENSE-SETUP.md` for the one-time step to add the
+license file on GitHub, plus `COPYRIGHT` and `NOTICE.md`. In short: reuse and modify
+freely, but redistributed versions must stay open-source under GPL-3.0.
