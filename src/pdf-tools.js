@@ -8,19 +8,14 @@ import * as pdfjsLib from 'pdfjs-dist';
 import PdfWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import { encryptPDF } from '@pdfsmaller/pdf-encrypt';
 import { decryptPDF } from '@pdfsmaller/pdf-decrypt';
-import { compress as compressPdfLib } from '@quicktoolsone/pdf-compress';
 import { Document, Packer, Paragraph, TextRun } from 'docx';
 import mammoth from 'mammoth';
 import * as XLSX from 'xlsx';
+import { jsPDF } from 'jspdf';
+import autoTable from 'jspdf-autotable';
 import { initPdf2Md } from './pdf2md.js';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = PdfWorker;
-
-// html2pdf is imported lazily inside the tools that need it (it's heavy).
-async function getHtml2Pdf() {
-  const mod = await import('html2pdf.js');
-  return mod.default || mod;
-}
 
 wireToolNav('.sidebar .stool', 'mobileToolSelect', 'panel-');
 initPdf2Md();
@@ -496,7 +491,7 @@ async function renderPageToCanvas(doc, pageNum, canvas, scale = 1.3) {
 })();
 
 // =================================================================
-// 9. COMPRESS
+// 9. COMPRESS  (reliable: rasterize each page to a JPEG at preset quality/scale)
 // =================================================================
 (function compressTool() {
   const dz = document.getElementById('dz-compress'), fi = document.getElementById('fi-compress');
@@ -506,13 +501,48 @@ async function renderPageToCanvas(doc, pageNum, canvas, scale = 1.3) {
   document.getElementById('compress-go').onclick = async () => {
     if (!file) return setStatus('compress-status', 'select a PDF first');
     const preset = document.getElementById('compress-preset').value;
-    setStatus('compress-status', 'compressing…'); setProgress('compress-progress', 30);
+    const cfg = preset === 'max' ? { scale: 1.0, quality: 0.5 }
+      : preset === 'lossless' ? { scale: 2.0, quality: 0.85 }
+      : { scale: 1.5, quality: 0.7 };
+    setStatus('compress-status', 'compressing…'); setProgress('compress-progress', 10);
     try {
-      const result = await compressPdfLib(await file.arrayBuffer(), { preset });
+      const srcBytes = new Uint8Array(await file.arrayBuffer());
+      const srcDoc = await loadPdfJs(srcBytes.slice());
+      console.log('[compress] pages:', srcDoc.numPages);
+      const outDoc = await PDFDocument.create();
+      for (let i = 1; i <= srcDoc.numPages; i++) {
+        setProgress('compress-progress', Math.round(i / srcDoc.numPages * 90) + 5);
+        const page = await srcDoc.getPage(i);
+        const viewport = page.getViewport({ scale: cfg.scale });
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.max(1, Math.floor(viewport.width));
+        canvas.height = Math.max(1, Math.floor(viewport.height));
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+        await page.render({ canvasContext: ctx, viewport }).promise;
+        console.log(`[compress] page ${i} rendered ${canvas.width}x${canvas.height}`);
+
+        const jpg = await new Promise(res => canvas.toBlob(res, 'image/jpeg', cfg.quality));
+        if (!jpg) { throw new Error(`page ${i}: canvas.toBlob returned null (canvas may be too large for this browser)`); }
+        const jpgBytes = new Uint8Array(await jpg.arrayBuffer());
+        if (jpgBytes.length < 100) { throw new Error(`page ${i}: rendered image was empty`); }
+        const img = await outDoc.embedJpg(jpgBytes);
+        const base = page.getViewport({ scale: 1 });
+        const p = outDoc.addPage([base.width, base.height]);
+        p.drawImage(img, { x: 0, y: 0, width: base.width, height: base.height });
+      }
+      const outBytes = await outDoc.save();
       setProgress('compress-progress', 100);
-      downloadBlob(new Blob([result.pdf], { type: 'application/pdf' }), file.name.replace(/\.pdf$/i, '.compressed.pdf'));
-      setStatus('compress-status', `done — saved ${result.stats.percentageSaved.toFixed(1)}% ✓`);
-    } catch (e) { console.error(e); setStatus('compress-status', 'error: ' + e.message); }
+      console.log('[compress] out bytes:', outBytes.length, 'vs src:', srcBytes.length);
+      if (outBytes.length < 200) { setStatus('compress-status', 'error: output came out empty — please report this'); return; }
+      const saved = (1 - outBytes.length / srcBytes.length) * 100;
+      if (outBytes.length >= srcBytes.length) {
+        setStatus('compress-status', `done, but this PDF was already efficient — output is not smaller. Try "Maximum". ✓`);
+      } else {
+        setStatus('compress-status', `done — ${formatBytes(srcBytes.length)} → ${formatBytes(outBytes.length)} (saved ${saved.toFixed(0)}%) ✓`);
+      }
+      downloadBlob(new Blob([outBytes], { type: 'application/pdf' }), file.name.replace(/\.pdf$/i, '.compressed.pdf'));
+    } catch (e) { console.error('[compress]', e); setStatus('compress-status', 'error: ' + e.message); }
     finally { setTimeout(() => setProgress('compress-progress', 0), 800); }
   };
 })();
@@ -562,61 +592,132 @@ async function renderPageToCanvas(doc, pageNum, canvas, scale = 1.3) {
 })();
 
 // =================================================================
-// 11. PDF TO SCANNED
+// 11. PDF TO SCANNED  (new scales + live preview)
 // =================================================================
 (function scannedTool() {
   const dz = document.getElementById('dz-scanned'), fi = document.getElementById('fi-scanned');
   const dzSig = document.getElementById('dz-scanned-sig'), fiSig = document.getElementById('fi-scanned-sig');
   if (!dz) return;
-  let file = null, sigFile = null;
-  wireDropzone(dz, fi, f => { file = f; setStatus('scanned-status', `loaded ${f.name}`); });
-  wireDropzone(dzSig, fiSig, f => { sigFile = f; });
-  function effects(ctx, w, h, s) {
+  let file = null, sigFile = null, sigImg = null, srcPdf = null, srcBytes = null;
+
+  // Read sliders and map the intuitive 0-based scales to internal effect values.
+  function readSettings() {
+    const grainPct = +document.getElementById('sc-grain').value;      // 0..100
+    const skewDeg = +document.getElementById('sc-skew').value;         // 0..5
+    const brightPct = +document.getElementById('sc-bright').value;     // -50..50
+    const contrastPct = +document.getElementById('sc-contrast').value; // -50..50
+    return {
+      grain: grainPct * 0.6,                 // px noise amplitude
+      skew: skewDeg,
+      brightness: 1 + brightPct / 100,       // multiplier
+      contrast: contrastPct / 100,           // -0.5..0.5 (0 = none)
+      watermarkText: document.getElementById('sc-wm').value,
+    };
+  }
+  function updateLabels() {
+    document.getElementById('sc-grain-v').textContent = document.getElementById('sc-grain').value + '%';
+    document.getElementById('sc-skew-v').textContent = document.getElementById('sc-skew').value + '°';
+    const b = +document.getElementById('sc-bright').value;
+    document.getElementById('sc-bright-v').textContent = (b >= 0 ? '+' : '') + b + '%';
+    document.getElementById('sc-contrast-v').textContent = document.getElementById('sc-contrast').value;
+  }
+
+  function applyEffects(ctx, w, h, s, seededSkewSign) {
     const d = ctx.getImageData(0, 0, w, h); const px = d.data;
     const cf = (259 * (s.contrast * 255 + 255)) / (255 * (259 - s.contrast * 255));
     for (let i = 0; i < px.length; i += 4) {
       let g = px[i] * 0.299 + px[i + 1] * 0.587 + px[i + 2] * 0.114;
       g = cf * (g - 128) + 128; g *= s.brightness; g += (Math.random() - 0.5) * s.grain;
-      px[i] = px[i + 1] = px[i + 2] = g;
+      px[i] = px[i + 1] = px[i + 2] = Math.max(0, Math.min(255, g));
     }
     ctx.putImageData(d, 0, 0);
     const grad = ctx.createRadialGradient(w / 2, h / 2, Math.min(w, h) * 0.3, w / 2, h / 2, Math.max(w, h) * 0.7);
     grad.addColorStop(0, 'rgba(0,0,0,0)'); grad.addColorStop(1, 'rgba(0,0,0,0.15)');
     ctx.fillStyle = grad; ctx.fillRect(0, 0, w, h);
   }
-  document.getElementById('scanned-go').onclick = async () => {
-    if (!file) return setStatus('scanned-status', 'choose a base PDF first');
-    setStatus('scanned-status', 'applying scanner effects…');
+
+  // Render one page to a canvas with effects. skewSign fixed per page for determinism.
+  async function renderScannedPage(page, scale, s, skewSign) {
+    const viewport = page.getViewport({ scale });
+    const canvas = document.createElement('canvas'); const ctx = canvas.getContext('2d');
+    canvas.width = viewport.width; canvas.height = viewport.height;
+    ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+    const skew = (s.skew || 0) * (Math.PI / 180) * skewSign;
+    ctx.translate(canvas.width / 2, canvas.height / 2); ctx.rotate(skew); ctx.translate(-canvas.width / 2, -canvas.height / 2);
+    await page.render({ canvasContext: ctx, viewport }).promise;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    applyEffects(ctx, canvas.width, canvas.height, s);
+    if (sigImg) {
+      const sw = canvas.width * 0.15, sh = (sigImg.height / sigImg.width) * sw;
+      ctx.drawImage(sigImg, canvas.width - sw - 50, canvas.height - sh - 50, sw, sh);
+    }
+    if (s.watermarkText) {
+      ctx.font = `bold ${Math.floor(canvas.width * 0.06)}px Arial`; ctx.fillStyle = 'rgba(0,0,0,0.12)'; ctx.textAlign = 'center';
+      ctx.save(); ctx.translate(canvas.width / 2, canvas.height / 2); ctx.rotate(-45 * Math.PI / 180); ctx.fillText(s.watermarkText, 0, 0); ctx.restore();
+    }
+    return { canvas, viewport };
+  }
+
+  let previewTimer = null;
+  async function refreshPreview(immediate) {
+    if (!srcPdf) return;
+    clearTimeout(previewTimer);
+    const run = async () => {
+      try {
+        const page = await srcPdf.getPage(1);
+        const { canvas } = await renderScannedPage(page, 0.8, readSettings(), 1);
+        const pv = document.getElementById('scanned-preview');
+        pv.width = canvas.width; pv.height = canvas.height;
+        pv.getContext('2d').drawImage(canvas, 0, 0);
+        document.getElementById('scanned-preview-wrap').style.display = 'block';
+        console.log('[scanned] preview drawn', canvas.width, canvas.height);
+      } catch (e) { console.error('[scanned] preview error', e); }
+    };
+    if (immediate) return run();
+    previewTimer = setTimeout(run, 120);
+  }
+
+  wireDropzone(dz, fi, async f => {
+    file = f;
+    setStatus('scanned-status', `loading ${f.name}…`);
     try {
-      const s = { grain: +document.getElementById('sc-grain').value, skew: +document.getElementById('sc-skew').value, brightness: +document.getElementById('sc-bright').value, contrast: +document.getElementById('sc-contrast').value, watermarkText: document.getElementById('sc-wm').value };
-      const srcPdf = await loadPdfJs(new Uint8Array(await file.arrayBuffer()));
-      let sigBytes = sigFile ? new Uint8Array(await sigFile.arrayBuffer()) : null;
+      srcBytes = new Uint8Array(await f.arrayBuffer());
+      srcPdf = await loadPdfJs(srcBytes.slice());
+      console.log('[scanned] loaded, pages:', srcPdf.numPages);
+      document.getElementById('scanned-preview-wrap').style.display = 'block';
+      updateLabels();
+      await refreshPreview(true);
+      setStatus('scanned-status', `loaded — adjust sliders, preview updates live`);
+    } catch (e) { console.error('[scanned]', e); setStatus('scanned-status', 'error loading PDF: ' + e.message); }
+  });
+  wireDropzone(dzSig, fiSig, async f => {
+    sigFile = f;
+    sigImg = new Image();
+    await new Promise((res, rej) => { sigImg.onload = res; sigImg.onerror = rej; sigImg.src = URL.createObjectURL(f); });
+    refreshPreview();
+  });
+
+  ['sc-grain', 'sc-skew', 'sc-bright', 'sc-contrast'].forEach(id =>
+    document.getElementById(id).addEventListener('input', () => { updateLabels(); refreshPreview(); }));
+  document.getElementById('sc-wm').addEventListener('input', refreshPreview);
+  updateLabels();
+
+  document.getElementById('scanned-go').onclick = async () => {
+    if (!srcPdf) return setStatus('scanned-status', 'choose a base PDF first');
+    setStatus('scanned-status', 'generating…');
+    try {
+      const s = readSettings();
       const outDoc = await PDFDocument.create();
       for (let i = 1; i <= srcPdf.numPages; i++) {
+        setStatus('scanned-status', `rendering page ${i} / ${srcPdf.numPages}…`);
         const page = await srcPdf.getPage(i);
-        const viewport = page.getViewport({ scale: 2 });
-        const canvas = document.createElement('canvas'); const ctx = canvas.getContext('2d');
-        canvas.width = viewport.width; canvas.height = viewport.height;
-        const skew = (s.skew || 0) * (Math.PI / 180) * (Math.random() > 0.5 ? 1 : -1);
-        ctx.translate(canvas.width / 2, canvas.height / 2); ctx.rotate(skew); ctx.translate(-canvas.width / 2, -canvas.height / 2);
-        await page.render({ canvasContext: ctx, viewport }).promise;
-        ctx.setTransform(1, 0, 0, 1, 0, 0);
-        effects(ctx, canvas.width, canvas.height, s);
-        if (sigBytes) {
-          const img = new Image();
-          await new Promise((res, rej) => { img.onload = res; img.onerror = rej; img.src = URL.createObjectURL(new Blob([sigBytes])); });
-          const sw = canvas.width * 0.15, sh = (img.height / img.width) * sw;
-          ctx.drawImage(img, canvas.width - sw - 50, canvas.height - sh - 50, sw, sh);
-          URL.revokeObjectURL(img.src);
-        }
-        if (s.watermarkText) {
-          ctx.font = `bold ${Math.floor(canvas.width * 0.06)}px Arial`; ctx.fillStyle = 'rgba(255,255,255,0.3)'; ctx.textAlign = 'center';
-          ctx.save(); ctx.translate(canvas.width / 2, canvas.height / 2); ctx.rotate(-45 * Math.PI / 180); ctx.fillText(s.watermarkText, 0, 0); ctx.restore();
-        }
+        const skewSign = (i % 2 === 0) ? 1 : -1;
+        const { canvas } = await renderScannedPage(page, 2, s, skewSign);
         const jpg = await new Promise(res => canvas.toBlob(res, 'image/jpeg', 0.85));
         const img = await outDoc.embedJpg(new Uint8Array(await jpg.arrayBuffer()));
-        const np = outDoc.addPage([viewport.width, viewport.height]);
-        np.drawImage(img, { x: 0, y: 0, width: viewport.width, height: viewport.height });
+        const base = page.getViewport({ scale: 1 });
+        const np = outDoc.addPage([base.width, base.height]);
+        np.drawImage(img, { x: 0, y: 0, width: base.width, height: base.height });
       }
       const bytes = await outDoc.save();
       downloadBlob(new Blob([bytes], { type: 'application/pdf' }), file.name.replace(/\.pdf$/i, '_scanned.pdf'));
@@ -670,7 +771,7 @@ async function renderPageToCanvas(doc, pageNum, canvas, scale = 1.3) {
 })();
 
 // =================================================================
-// 13. WORD TO PDF
+// 13. WORD TO PDF  (robust: mammoth raw text → jsPDF, guards against blank)
 // =================================================================
 (function wordToPdfTool() {
   const dz = document.getElementById('dz-word2pdf'), fi = document.getElementById('fi-word2pdf');
@@ -679,23 +780,79 @@ async function renderPageToCanvas(doc, pageNum, canvas, scale = 1.3) {
   wireDropzone(dz, fi, f => { file = f; setStatus('word2pdf-status', `loaded ${f.name}`); });
   document.getElementById('word2pdf-go').onclick = async () => {
     if (!file) return setStatus('word2pdf-status', 'select a .docx first');
-    setStatus('word2pdf-status', 'converting…');
+    setStatus('word2pdf-status', 'reading document…');
     try {
-      const result = await mammoth.convertToHtml({ arrayBuffer: await file.arrayBuffer() });
-      const container = document.createElement('div');
-      container.style.cssText = 'position:absolute;left:-9999px;top:0;width:210mm;padding:20mm;font-family:Arial,sans-serif;font-size:12pt;line-height:1.6;color:#000;';
-      container.innerHTML = result.value;
-      document.body.appendChild(container);
-      const html2pdf = await getHtml2Pdf();
-      await html2pdf().set({ margin: 0, filename: file.name.replace(/\.docx$/i, '.pdf'), image: { type: 'jpeg', quality: 0.98 }, html2canvas: { scale: 2 }, jsPDF: { unit: 'mm', format: 'a4' } }).from(container).save();
-      document.body.removeChild(container);
+      const buf = await file.arrayBuffer();
+
+      // Primary: structured HTML (for headings/lists). Fallback: raw text.
+      let htmlText = '', rawText = '';
+      try { htmlText = (await mammoth.convertToHtml({ arrayBuffer: buf })).value || ''; } catch (e) { console.warn('convertToHtml failed', e); }
+      try { rawText = (await mammoth.extractRawText({ arrayBuffer: buf })).value || ''; } catch (e) { console.warn('extractRawText failed', e); }
+
+      // If BOTH are empty, do not produce a blank file — tell the user.
+      if (!htmlText.trim() && !rawText.trim()) {
+        setStatus('word2pdf-status', 'error: no readable text found in this .docx (is it empty, or an unusual format?)');
+        return;
+      }
+
+      const pdf = new jsPDF({ unit: 'pt', format: 'a4' });
+      const pageW = pdf.internal.pageSize.getWidth();
+      const pageH = pdf.internal.pageSize.getHeight();
+      const margin = 56;
+      const maxW = pageW - margin * 2;
+      let y = margin;
+
+      function ensureSpace(lineH) { if (y + lineH > pageH - margin) { pdf.addPage(); y = margin; } }
+      function writeBlock(text, { size = 11, bold = false, gapAfter = 6, indent = 0 } = {}) {
+        if (!text || !text.trim()) { y += size * 0.5; return; }
+        pdf.setFont('helvetica', bold ? 'bold' : 'normal');
+        pdf.setFontSize(size);
+        const lines = pdf.splitTextToSize(text.replace(/\s+/g, ' ').trim(), maxW - indent);
+        const lineH = size * 1.4;
+        for (const ln of lines) { ensureSpace(lineH); pdf.text(ln, margin + indent, y); y += lineH; }
+        y += gapAfter;
+      }
+
+      let wroteSomething = false;
+      // Try structured path first.
+      if (htmlText.trim()) {
+        const dom = new DOMParser().parseFromString(htmlText, 'text/html');
+        const blocks = Array.from(dom.body.querySelectorAll('h1,h2,h3,h4,p,li,table'));
+        if (blocks.length) {
+          for (const el of blocks) {
+            const tag = el.tagName.toLowerCase();
+            const txt = (el.textContent || '').trim();
+            if (!txt && tag !== 'table') continue;
+            if (tag === 'h1') writeBlock(txt, { size: 20, bold: true, gapAfter: 10 });
+            else if (tag === 'h2') writeBlock(txt, { size: 16, bold: true, gapAfter: 8 });
+            else if (tag === 'h3' || tag === 'h4') writeBlock(txt, { size: 13, bold: true, gapAfter: 7 });
+            else if (tag === 'li') writeBlock('•  ' + txt, { size: 11, gapAfter: 3, indent: 14 });
+            else if (tag === 'table') {
+              const rows = Array.from(el.querySelectorAll('tr')).map(tr => Array.from(tr.querySelectorAll('td,th')).map(c => c.textContent.trim()));
+              if (rows.length) { autoTable(pdf, { startY: y, head: [rows[0]], body: rows.slice(1), margin: { left: margin, right: margin }, styles: { fontSize: 9 } }); y = pdf.lastAutoTable.finalY + 12; }
+            } else writeBlock(txt, { size: 11, gapAfter: 6 });
+            wroteSomething = true;
+          }
+        }
+      }
+      // Fallback: if structured path wrote nothing, dump raw text paragraphs.
+      if (!wroteSomething) {
+        const paras = rawText.split(/\n{2,}/);
+        for (const p of paras) { if (p.trim()) { writeBlock(p, { size: 11, gapAfter: 6 }); wroteSomething = true; } }
+        // last resort: single blob
+        if (!wroteSomething && rawText.trim()) { writeBlock(rawText, { size: 11 }); wroteSomething = true; }
+      }
+
+      if (!wroteSomething) { setStatus('word2pdf-status', 'error: could not place any text on the page'); return; }
+
+      pdf.save(file.name.replace(/\.docx$/i, '.pdf'));
       setStatus('word2pdf-status', 'done — PDF downloaded ✓');
     } catch (e) { console.error(e); setStatus('word2pdf-status', 'error: ' + e.message); }
   };
 })();
 
 // =================================================================
-// 14. EXCEL TO PDF
+// 14. EXCEL TO PDF  (guarded + diagnostic)
 // =================================================================
 (function excelToPdfTool() {
   const dz = document.getElementById('dz-excel2pdf'), fi = document.getElementById('fi-excel2pdf');
@@ -704,21 +861,61 @@ async function renderPageToCanvas(doc, pageNum, canvas, scale = 1.3) {
   wireDropzone(dz, fi, f => { file = f; setStatus('excel2pdf-status', `loaded ${f.name}`); });
   document.getElementById('excel2pdf-go').onclick = async () => {
     if (!file) return setStatus('excel2pdf-status', 'select a spreadsheet first');
-    setStatus('excel2pdf-status', 'converting…');
+    setStatus('excel2pdf-status', 'reading spreadsheet…');
     try {
-      const wb = XLSX.read(new Uint8Array(await file.arrayBuffer()), { type: 'array' });
-      const ws = wb.Sheets[wb.SheetNames[0]];
-      const html = XLSX.utils.sheet_to_html(ws);
-      const container = document.createElement('div');
-      container.style.cssText = 'position:absolute;left:-9999px;top:0;width:297mm;padding:14mm;font-family:Arial,sans-serif;font-size:10pt;';
-      container.innerHTML = html;
-      container.querySelectorAll('table').forEach(t => { t.style.borderCollapse = 'collapse'; t.style.width = '100%'; });
-      container.querySelectorAll('td,th').forEach(c => { c.style.border = '1px solid #999'; c.style.padding = '4px 6px'; });
-      document.body.appendChild(container);
-      const html2pdf = await getHtml2Pdf();
-      await html2pdf().set({ margin: 0, filename: file.name.replace(/\.(xlsx?|csv)$/i, '.pdf'), image: { type: 'jpeg', quality: 0.98 }, html2canvas: { scale: 2 }, jsPDF: { unit: 'mm', format: 'a4', orientation: 'landscape' } }).from(container).save();
-      document.body.removeChild(container);
+      const buf = await file.arrayBuffer();
+      const wb = XLSX.read(new Uint8Array(buf), { type: 'array' });
+      console.log('[excel2pdf] sheet names:', wb.SheetNames);
+
+      const pdf = new jsPDF({ unit: 'pt', format: 'a4', orientation: 'landscape' });
+      let first = true, anyData = false;
+
+      for (const sheetName of wb.SheetNames) {
+        const ws = wb.Sheets[sheetName];
+        if (!ws) continue;
+        const rows = XLSX.utils.sheet_to_json(ws, { header: 1, blankrows: false, defval: '' });
+        console.log(`[excel2pdf] sheet "${sheetName}" rows:`, rows.length);
+        if (!rows.length) continue;
+
+        if (!first) pdf.addPage();
+        first = false;
+        pdf.setFont('helvetica', 'bold'); pdf.setFontSize(12);
+        pdf.text(String(sheetName), 40, 40);
+
+        const maxCols = Math.max(...rows.map(r => r.length), 1);
+        const norm = rows.map(r => {
+          const a = r.map(c => (c == null ? '' : String(c)));
+          while (a.length < maxCols) a.push('');
+          return a;
+        });
+
+        try {
+          autoTable(pdf, {
+            startY: 52,
+            head: [norm[0]],
+            body: norm.slice(1),
+            margin: { left: 40, right: 40 },
+            styles: { fontSize: 8, cellPadding: 3, overflow: 'linebreak' },
+            headStyles: { fillColor: [51, 65, 92] },
+          });
+          anyData = true;
+        } catch (tblErr) {
+          // Fallback if autotable misbehaves: write rows as plain text lines.
+          console.warn('[excel2pdf] autoTable failed, using text fallback', tblErr);
+          let y = 60;
+          pdf.setFont('helvetica', 'normal'); pdf.setFontSize(9);
+          for (const row of norm) {
+            const line = row.join('   |   ');
+            const wrapped = pdf.splitTextToSize(line, pdf.internal.pageSize.getWidth() - 80);
+            for (const ln of wrapped) { if (y > pdf.internal.pageSize.getHeight() - 40) { pdf.addPage(); y = 40; } pdf.text(ln, 40, y); y += 12; }
+          }
+          anyData = true;
+        }
+      }
+
+      if (!anyData) { setStatus('excel2pdf-status', 'error: no data rows found in this file'); return; }
+      pdf.save(file.name.replace(/\.(xlsx?|csv)$/i, '.pdf'));
       setStatus('excel2pdf-status', 'done — PDF downloaded ✓');
-    } catch (e) { console.error(e); setStatus('excel2pdf-status', 'error: ' + e.message); }
+    } catch (e) { console.error('[excel2pdf]', e); setStatus('excel2pdf-status', 'error: ' + e.message); }
   };
 })();

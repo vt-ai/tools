@@ -53,6 +53,16 @@ initPdf2Md();
   function render() { preview.innerHTML = marked.parse(input.value); }
   input.addEventListener('input', render); render();
 
+  // Upload a .md file → load into the textarea
+  const uploadEl = document.getElementById('frommd-upload');
+  if (uploadEl) uploadEl.addEventListener('change', (e) => {
+    const f = e.target.files && e.target.files[0];
+    if (!f) return;
+    const reader = new FileReader();
+    reader.onload = () => { input.value = reader.result; render(); setStatus('frommd-status', `loaded ${f.name}`); };
+    reader.readAsText(f);
+  });
+
   document.getElementById('frommd-html').onclick = () => {
     const htmlString = `<!DOCTYPE html>\n<html lang="en">\n<head>\n<meta charset="UTF-8">\n<title>Markdown Export</title>\n<style>body{font-family:Arial,sans-serif;max-width:800px;margin:40px auto;padding:0 20px;line-height:1.6;}code{background:#f4f4f4;padding:2px 5px;border-radius:3px;}pre{background:#f4f4f4;padding:15px;border-radius:5px;overflow-x:auto;}</style>\n</head>\n<body>\n${marked.parse(input.value)}\n</body>\n</html>`;
     downloadBlob(new Blob([htmlString], { type: 'text/html' }), `${baseName}.html`);
