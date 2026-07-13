@@ -498,17 +498,47 @@ async function renderPageToCanvas(doc, pageNum, canvas, scale = 1.3) {
   if (!dz) return;
   let file = null;
   wireDropzone(dz, fi, f => { file = f; setStatus('compress-status', `loaded ${f.name} (${formatBytes(f.size)})`); });
+
+  // Toggle the image-quality row + warning based on mode.
+  const modeSel = document.getElementById('compress-mode');
+  const presetRow = document.getElementById('compress-preset-row');
+  const rasterNote = document.getElementById('compress-raster-note');
+  function syncMode() {
+    const isImage = modeSel.value === 'image';
+    presetRow.style.display = isImage ? '' : 'none';
+    rasterNote.style.display = isImage ? '' : 'none';
+  }
+  if (modeSel) { modeSel.addEventListener('change', syncMode); syncMode(); }
+
   document.getElementById('compress-go').onclick = async () => {
     if (!file) return setStatus('compress-status', 'select a PDF first');
-    const preset = document.getElementById('compress-preset').value;
-    const cfg = preset === 'max' ? { scale: 1.0, quality: 0.5 }
-      : preset === 'lossless' ? { scale: 2.0, quality: 0.85 }
-      : { scale: 1.5, quality: 0.7 };
-    setStatus('compress-status', 'compressing…'); setProgress('compress-progress', 10);
+    const mode = modeSel ? modeSel.value : 'text';
+    setStatus('compress-status', 'compressing…'); setProgress('compress-progress', 15);
     try {
       const srcBytes = new Uint8Array(await file.arrayBuffer());
+
+      if (mode === 'text') {
+        // Text-preserving: re-save via pdf-lib with object streams. Keeps text selectable.
+        const doc = await loadPdfLib(srcBytes.slice());
+        setProgress('compress-progress', 60);
+        const outBytes = await doc.save({ useObjectStreams: true });
+        setProgress('compress-progress', 100);
+        const saved = (1 - outBytes.length / srcBytes.length) * 100;
+        if (outBytes.length >= srcBytes.length * 0.98) {
+          setStatus('compress-status', `done — text kept selectable. This PDF was already compact (little/no size reduction). For big savings on a scanned PDF, switch to "Rasterize" mode. ✓`);
+        } else {
+          setStatus('compress-status', `done — ${formatBytes(srcBytes.length)} → ${formatBytes(outBytes.length)} (saved ${saved.toFixed(0)}%), text still selectable ✓`);
+        }
+        downloadBlob(new Blob([outBytes], { type: 'application/pdf' }), file.name.replace(/\.pdf$/i, '.compressed.pdf'));
+        return;
+      }
+
+      // Rasterize mode (big savings, text becomes image).
+      const preset = document.getElementById('compress-preset').value;
+      const cfg = preset === 'max' ? { scale: 1.0, quality: 0.5 }
+        : preset === 'lossless' ? { scale: 2.0, quality: 0.85 }
+        : { scale: 1.5, quality: 0.7 };
       const srcDoc = await loadPdfJs(srcBytes.slice());
-      console.log('[compress] pages:', srcDoc.numPages);
       const outDoc = await PDFDocument.create();
       for (let i = 1; i <= srcDoc.numPages; i++) {
         setProgress('compress-progress', Math.round(i / srcDoc.numPages * 90) + 5);
@@ -520,12 +550,9 @@ async function renderPageToCanvas(doc, pageNum, canvas, scale = 1.3) {
         const ctx = canvas.getContext('2d');
         ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, canvas.width, canvas.height);
         await page.render({ canvasContext: ctx, viewport }).promise;
-        console.log(`[compress] page ${i} rendered ${canvas.width}x${canvas.height}`);
-
         const jpg = await new Promise(res => canvas.toBlob(res, 'image/jpeg', cfg.quality));
-        if (!jpg) { throw new Error(`page ${i}: canvas.toBlob returned null (canvas may be too large for this browser)`); }
+        if (!jpg) throw new Error(`page ${i}: canvas.toBlob returned null`);
         const jpgBytes = new Uint8Array(await jpg.arrayBuffer());
-        if (jpgBytes.length < 100) { throw new Error(`page ${i}: rendered image was empty`); }
         const img = await outDoc.embedJpg(jpgBytes);
         const base = page.getViewport({ scale: 1 });
         const p = outDoc.addPage([base.width, base.height]);
@@ -533,14 +560,8 @@ async function renderPageToCanvas(doc, pageNum, canvas, scale = 1.3) {
       }
       const outBytes = await outDoc.save();
       setProgress('compress-progress', 100);
-      console.log('[compress] out bytes:', outBytes.length, 'vs src:', srcBytes.length);
-      if (outBytes.length < 200) { setStatus('compress-status', 'error: output came out empty — please report this'); return; }
       const saved = (1 - outBytes.length / srcBytes.length) * 100;
-      if (outBytes.length >= srcBytes.length) {
-        setStatus('compress-status', `done, but this PDF was already efficient — output is not smaller. Try "Maximum". ✓`);
-      } else {
-        setStatus('compress-status', `done — ${formatBytes(srcBytes.length)} → ${formatBytes(outBytes.length)} (saved ${saved.toFixed(0)}%) ✓`);
-      }
+      setStatus('compress-status', `done — ${formatBytes(srcBytes.length)} → ${formatBytes(outBytes.length)} (saved ${saved.toFixed(0)}%). Note: text is now image-only. ✓`);
       downloadBlob(new Blob([outBytes], { type: 'application/pdf' }), file.name.replace(/\.pdf$/i, '.compressed.pdf'));
     } catch (e) { console.error('[compress]', e); setStatus('compress-status', 'error: ' + e.message); }
     finally { setTimeout(() => setProgress('compress-progress', 0), 800); }
@@ -665,7 +686,7 @@ async function renderPageToCanvas(doc, pageNum, canvas, scale = 1.3) {
     const run = async () => {
       try {
         const page = await srcPdf.getPage(1);
-        const { canvas } = await renderScannedPage(page, 0.8, readSettings(), 1);
+        const { canvas } = await renderScannedPage(page, 1.4, readSettings(), 1);
         const pv = document.getElementById('scanned-preview');
         pv.width = canvas.width; pv.height = canvas.height;
         pv.getContext('2d').drawImage(canvas, 0, 0);
@@ -771,7 +792,7 @@ async function renderPageToCanvas(doc, pageNum, canvas, scale = 1.3) {
 })();
 
 // =================================================================
-// 13. WORD TO PDF  (robust: mammoth raw text → jsPDF, guards against blank)
+// 13. WORD TO PDF  (true fidelity: render mammoth HTML on-screen, capture with html2pdf)
 // =================================================================
 (function wordToPdfTool() {
   const dz = document.getElementById('dz-word2pdf'), fi = document.getElementById('fi-word2pdf');
@@ -781,73 +802,57 @@ async function renderPageToCanvas(doc, pageNum, canvas, scale = 1.3) {
   document.getElementById('word2pdf-go').onclick = async () => {
     if (!file) return setStatus('word2pdf-status', 'select a .docx first');
     setStatus('word2pdf-status', 'reading document…');
+    let holder = null;
     try {
       const buf = await file.arrayBuffer();
+      // Convert with style map so headings/bold/italic/tables survive as real HTML.
+      const result = await mammoth.convertToHtml(
+        { arrayBuffer: buf },
+        { includeDefaultStyleMap: true }
+      );
+      const html = (result.value || '').trim();
+      if (!html) { setStatus('word2pdf-status', 'error: no readable content found in this .docx'); return; }
 
-      // Primary: structured HTML (for headings/lists). Fallback: raw text.
-      let htmlText = '', rawText = '';
-      try { htmlText = (await mammoth.convertToHtml({ arrayBuffer: buf })).value || ''; } catch (e) { console.warn('convertToHtml failed', e); }
-      try { rawText = (await mammoth.extractRawText({ arrayBuffer: buf })).value || ''; } catch (e) { console.warn('extractRawText failed', e); }
+      setStatus('word2pdf-status', 'rendering…');
 
-      // If BOTH are empty, do not produce a blank file — tell the user.
-      if (!htmlText.trim() && !rawText.trim()) {
-        setStatus('word2pdf-status', 'error: no readable text found in this .docx (is it empty, or an unusual format?)');
-        return;
-      }
+      // Render VISIBLE and on-screen (off-screen is what produced blank output before).
+      // We overlay it, capture, then remove — it flashes briefly, which is fine.
+      holder = document.createElement('div');
+      holder.style.cssText = 'position:fixed;top:0;left:0;z-index:99999;background:#fff;overflow:auto;width:210mm;max-width:100vw;height:auto;';
+      const page = document.createElement('div');
+      // A4 content width at 96dpi ≈ 794px; use realistic doc styling.
+      page.style.cssText = 'width:794px;padding:64px 72px;box-sizing:border-box;font-family:Georgia,\'Times New Roman\',serif;font-size:12pt;line-height:1.5;color:#111;background:#fff;';
+      page.innerHTML = html;
+      // Reasonable defaults for common elements so it reads like a document.
+      page.querySelectorAll('h1').forEach(e => e.style.cssText = 'font-size:22pt;margin:0 0 10px;font-weight:700;');
+      page.querySelectorAll('h2').forEach(e => e.style.cssText = 'font-size:17pt;margin:16px 0 8px;font-weight:700;');
+      page.querySelectorAll('h3').forEach(e => e.style.cssText = 'font-size:14pt;margin:14px 0 6px;font-weight:700;');
+      page.querySelectorAll('p').forEach(e => e.style.margin = '0 0 10px');
+      page.querySelectorAll('ul,ol').forEach(e => { e.style.margin = '0 0 10px 0'; e.style.paddingLeft = '26px'; });
+      page.querySelectorAll('li').forEach(e => e.style.marginBottom = '4px');
+      page.querySelectorAll('table').forEach(e => { e.style.borderCollapse = 'collapse'; e.style.width = '100%'; e.style.margin = '8px 0 14px'; });
+      page.querySelectorAll('td,th').forEach(e => { e.style.border = '1px solid #888'; e.style.padding = '5px 8px'; e.style.fontSize = '11pt'; e.style.verticalAlign = 'top'; });
+      page.querySelectorAll('img').forEach(e => { e.style.maxWidth = '100%'; });
+      holder.appendChild(page);
+      document.body.appendChild(holder);
 
-      const pdf = new jsPDF({ unit: 'pt', format: 'a4' });
-      const pageW = pdf.internal.pageSize.getWidth();
-      const pageH = pdf.internal.pageSize.getHeight();
-      const margin = 56;
-      const maxW = pageW - margin * 2;
-      let y = margin;
+      // Give the browser a tick to lay out & load fonts before capture.
+      await new Promise(r => setTimeout(r, 60));
+      if (document.fonts && document.fonts.ready) { try { await document.fonts.ready; } catch {} }
 
-      function ensureSpace(lineH) { if (y + lineH > pageH - margin) { pdf.addPage(); y = margin; } }
-      function writeBlock(text, { size = 11, bold = false, gapAfter = 6, indent = 0 } = {}) {
-        if (!text || !text.trim()) { y += size * 0.5; return; }
-        pdf.setFont('helvetica', bold ? 'bold' : 'normal');
-        pdf.setFontSize(size);
-        const lines = pdf.splitTextToSize(text.replace(/\s+/g, ' ').trim(), maxW - indent);
-        const lineH = size * 1.4;
-        for (const ln of lines) { ensureSpace(lineH); pdf.text(ln, margin + indent, y); y += lineH; }
-        y += gapAfter;
-      }
+      const html2pdf = (await import('html2pdf.js')).default;
+      await html2pdf().set({
+        margin: [10, 10, 12, 10],
+        filename: file.name.replace(/\.docx$/i, '.pdf'),
+        image: { type: 'jpeg', quality: 0.98 },
+        html2canvas: { scale: 2, useCORS: true, backgroundColor: '#ffffff', windowWidth: 794 },
+        jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' },
+        pagebreak: { mode: ['avoid-all', 'css', 'legacy'] },
+      }).from(page).save();
 
-      let wroteSomething = false;
-      // Try structured path first.
-      if (htmlText.trim()) {
-        const dom = new DOMParser().parseFromString(htmlText, 'text/html');
-        const blocks = Array.from(dom.body.querySelectorAll('h1,h2,h3,h4,p,li,table'));
-        if (blocks.length) {
-          for (const el of blocks) {
-            const tag = el.tagName.toLowerCase();
-            const txt = (el.textContent || '').trim();
-            if (!txt && tag !== 'table') continue;
-            if (tag === 'h1') writeBlock(txt, { size: 20, bold: true, gapAfter: 10 });
-            else if (tag === 'h2') writeBlock(txt, { size: 16, bold: true, gapAfter: 8 });
-            else if (tag === 'h3' || tag === 'h4') writeBlock(txt, { size: 13, bold: true, gapAfter: 7 });
-            else if (tag === 'li') writeBlock('•  ' + txt, { size: 11, gapAfter: 3, indent: 14 });
-            else if (tag === 'table') {
-              const rows = Array.from(el.querySelectorAll('tr')).map(tr => Array.from(tr.querySelectorAll('td,th')).map(c => c.textContent.trim()));
-              if (rows.length) { autoTable(pdf, { startY: y, head: [rows[0]], body: rows.slice(1), margin: { left: margin, right: margin }, styles: { fontSize: 9 } }); y = pdf.lastAutoTable.finalY + 12; }
-            } else writeBlock(txt, { size: 11, gapAfter: 6 });
-            wroteSomething = true;
-          }
-        }
-      }
-      // Fallback: if structured path wrote nothing, dump raw text paragraphs.
-      if (!wroteSomething) {
-        const paras = rawText.split(/\n{2,}/);
-        for (const p of paras) { if (p.trim()) { writeBlock(p, { size: 11, gapAfter: 6 }); wroteSomething = true; } }
-        // last resort: single blob
-        if (!wroteSomething && rawText.trim()) { writeBlock(rawText, { size: 11 }); wroteSomething = true; }
-      }
-
-      if (!wroteSomething) { setStatus('word2pdf-status', 'error: could not place any text on the page'); return; }
-
-      pdf.save(file.name.replace(/\.docx$/i, '.pdf'));
       setStatus('word2pdf-status', 'done — PDF downloaded ✓');
-    } catch (e) { console.error(e); setStatus('word2pdf-status', 'error: ' + e.message); }
+    } catch (e) { console.error('[word2pdf]', e); setStatus('word2pdf-status', 'error: ' + e.message); }
+    finally { if (holder && holder.parentNode) holder.parentNode.removeChild(holder); }
   };
 })();
 
