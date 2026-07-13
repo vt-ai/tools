@@ -275,14 +275,23 @@
         <p>Open a PDF</p>
       </div>
       <div class="field-row">
-        <label>Preset:
-          <select id="compress-preset">
-            <option value="lossless">Lossless (smallest safe reduction)</option>
-            <option value="balanced" selected>Balanced (recommended)</option>
-            <option value="max">Maximum (smallest file, lower image quality)</option>
+        <label>Mode:
+          <select id="compress-mode">
+            <option value="text" selected>Keep text selectable (best for documents)</option>
+            <option value="image">Rasterize pages (best for scanned/image PDFs, smaller)</option>
           </select>
         </label>
       </div>
+      <div class="field-row" id="compress-preset-row">
+        <label>Image quality:
+          <select id="compress-preset">
+            <option value="lossless">High (larger)</option>
+            <option value="balanced" selected>Balanced (recommended)</option>
+            <option value="max">Maximum compression (smaller, lower quality)</option>
+          </select>
+        </label>
+      </div>
+      <div class="note-box amber" id="compress-raster-note" style="display:none;">Rasterize mode turns each page into an image — the file gets much smaller, but text will no longer be selectable or searchable. Use it for scanned documents; for normal text documents, keep "Keep text selectable".</div>
       <button class="btn" id="compress-go">Compress &amp; Download</button>
       <div class="progress-bar" id="compress-progress"><div class="fill"></div></div>
       <p class="status-line" id="compress-status">status: idle</p>
@@ -320,8 +329,8 @@
       </div>
       <div class="field-row"><label>Watermark text <input type="text" id="sc-wm" placeholder="e.g. SCANNED"></label></div>
       <div id="scanned-preview-wrap" style="display:none;margin-bottom:14px;">
-        <div style="font-size:12px;color:var(--muted);margin-bottom:6px;">Live preview (page 1):</div>
-        <div class="pdf-view-wrap" style="max-width:420px;"><canvas id="scanned-preview"></canvas></div>
+        <div style="font-size:12px;color:var(--muted);margin-bottom:6px;">Live preview (page 1, full page):</div>
+        <div class="pdf-view-wrap" style="max-width:600px;max-height:80vh;overflow:auto;"><canvas id="scanned-preview" style="width:100%;height:auto;display:block;"></canvas></div>
       </div>
       <button class="btn" id="scanned-go">Generate Scanned PDF</button>
       <p class="status-line" id="scanned-status">status: idle</p>
