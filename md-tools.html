@@ -60,26 +60,9 @@
       <h2>PDF / Word / Excel → Markdown</h2>
       <p class="desc">Convert documents into clean Markdown, previewed instantly and downloadable as a .md file.</p>
 
-      <div style="margin-bottom:24px;">
-        <h3 style="font-size:15px;margin-bottom:8px;">PDF → Markdown</h3>
-        <div class="dropzone" id="dz-pdf2md"><input type="file" id="fi-pdf2md" accept="application/pdf">
-          <svg width="24" height="24" viewBox="0 0 20 20" fill="none"><path d="M11 3H5.5A1.5 1.5 0 0 0 4 4.5v11A1.5 1.5 0 0 0 5.5 17h9a1.5 1.5 0 0 0 1.5-1.5V8l-5-5Z" stroke="currentColor" stroke-width="1.4"/><path d="M11 3v5h5" stroke="currentColor" stroke-width="1.4"/></svg>
-          <p>Open a PDF to convert to Markdown (OCR runs automatically on scanned pages)</p>
-        </div>
-        <div class="size-warning" id="sw-pdf2md"></div>
-        <div id="pdf2md-output" style="display:none;">
-          <div class="btn-row"><button class="btn secondary" id="pdf2md-download">Download .md</button></div>
-          <pre id="pdf2md-preview" style="background:#232821;color:#e5e0cf;padding:16px;border-radius:6px;font-size:12.5px;overflow:auto;max-height:40vh;white-space:pre-wrap;"></pre>
-        </div>
-        <div class="progress-bar" id="pdf2md-progress"><div class="fill"></div></div>
-        <p class="status-line" id="pdf2md-status">status: idle</p>
-      </div>
-
-      <div style="border-top:1px solid var(--border);padding-top:20px;">
-        <h3 style="font-size:15px;margin-bottom:8px;">Word / Excel → Markdown</h3>
-        <div class="dropzone" id="dz-tomd"><input type="file" id="fi-tomd" accept=".docx,.xlsx,.xls,.csv">
-          <svg width="24" height="24" viewBox="0 0 20 20" fill="none"><path d="M4 13V7l3 3.5L10 7v6M13 7v4m0 0-2-2m2 2 2-2" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
-          <p>Drag &amp; drop DOCX / XLSX / CSV here, or click to browse</p>
+      <div class="note-box moss" style="margin-bottom:24px;">
+          <div><b>Looking for PDF → Markdown?</b> It now lives with the other PDF tools, as
+          <a href="pdf-tools.html#extract">PDF → Text / Markdown</a>, so there is only one copy to maintain.</div>
         </div>
         <div id="tomd-output" style="display:none;">
           <div class="btn-row"><button class="btn secondary" id="tomd-download">Download .md</button></div>
