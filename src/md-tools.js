@@ -6,12 +6,10 @@ import { Document, Packer, Paragraph, TextRun, HeadingLevel } from 'docx';
 import mammoth from 'mammoth';
 import * as XLSX from 'xlsx';
 import TurndownService from 'turndown';
-import { initPdf2Md } from './pdf2md.js';
 
 async function getHtml2Pdf() { const mod = await import('html2pdf.js'); return mod.default || mod; }
 
 wireToolNav('.sidebar .stool', 'mobileToolSelect', 'panel-');
-initPdf2Md();
 
 // TO MARKDOWN (Word / Excel)
 (function toMarkdownTool() {

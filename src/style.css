@@ -143,3 +143,35 @@ canvas.sig-pad{width:100%;height:150px;background:var(--card);border:1.5px dashe
   .mobile-nav{display:block;}
   .tool-main{padding:22px 18px;max-width:100%;}
 }
+
+/* ---------- v3 additions: fresh PDF tools ---------- */
+.side-group{font-family:var(--font-mono);font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);padding:12px 10px 4px;}
+.sidebar .stool em{font-style:normal;font-family:var(--font-mono);font-size:8px;color:var(--moss);margin-left:4px;}
+.health{margin-top:16px;padding:10px;font-family:var(--font-mono);font-size:10px;line-height:1.4;border-top:1px solid var(--border);}
+.beta-tag{font-family:var(--font-mono);font-size:9.5px;font-weight:500;color:var(--moss);background:#EAF0EA;border:1px solid #CBDBC0;border-radius:10px;padding:2px 7px;vertical-align:middle;margin-left:6px;}
+.step-label{font-family:var(--font-mono);font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--navy);margin:20px 0 10px;padding-bottom:5px;border-bottom:1px solid var(--border);}
+.hint{color:var(--muted);font-size:11.5px;}
+button.mini{border:1px solid var(--border-strong);background:#fff;border-radius:4px;font-size:11px;line-height:1;padding:4px 7px;cursor:pointer;color:var(--ink);}
+button.mini:hover{background:#EFE8D4;}
+
+/* page thumbnails */
+.thumb-grid{display:flex;flex-wrap:wrap;gap:12px;margin:16px 0;}
+.thumb{width:160px;background:var(--card);border:1px solid var(--border-strong);border-radius:var(--radius);padding:8px;text-align:center;}
+.thumb.is-deleted{opacity:.4;}
+.thumb-img{background:#fff;border:1px solid var(--border);min-height:110px;display:flex;align-items:center;justify-content:center;overflow:hidden;}
+.thumb-label{font-family:var(--font-mono);font-size:10px;color:var(--muted);margin:6px 0 5px;}
+.thumb-bar{display:flex;gap:3px;justify-content:center;}
+
+/* signature stage */
+.sig-pad{width:100%;max-width:560px;height:180px;background:#fff;border:1.5px dashed var(--border-strong);border-radius:var(--radius);touch-action:none;display:block;margin-bottom:12px;}
+.sign-page-wrap{position:relative;display:inline-block;max-width:100%;border:1px solid var(--border-strong);border-radius:var(--radius);overflow:hidden;background:#fff;}
+.sign-page{line-height:0;}
+.sign-page canvas{max-width:100%;height:auto;}
+.sign-overlay{position:absolute;background-size:contain;background-repeat:no-repeat;background-position:center;border:1.5px dashed var(--navy);cursor:move;touch-action:none;}
+
+/* preview frame */
+.preview-frame{max-width:600px;max-height:80vh;overflow:auto;border:1px solid var(--border-strong);border-radius:var(--radius);background:#fff;}
+.preview-frame canvas{width:100%;height:auto;display:block;}
+
+/* code output */
+.code-out{background:#232821;color:#e5e0cf;padding:16px;border-radius:var(--radius);font-size:12px;overflow:auto;max-height:45vh;white-space:pre-wrap;font-family:var(--font-mono);}
